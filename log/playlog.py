@@ -19,13 +19,14 @@ from pprint import pprint
 #just add plotX variables containing a list of variables you want to plot in one figure. 
 #It is a 2-dim array, so you may define multiple plots per figure which are synchronized in the X-axis 
 #Also add a label per figure and then add the figureX variable to figures. Everything else is done by the script below
-figure1=[['currentFlow','targetAirFlow','controlI'],['controlOutputFiltered'],['controlLimitHit','controlForceHome','control_state']]
+figure1=[['currentFlow','targetAirFlow','controlI','currentPressure'],['controlOutputFiltered'],['controlLimitHit','controlForceHome','control_state']]
 figure2=[['respiratory_rate_set','respiratory_rate_measured'],['tidal_volume_set','volume_in_measured'],['ie_ratio_set','ie_ratio_measured']]
 figure3=[['pressure_measured','peep_value_measured','peak_pressure_measured','plateau_value_measurement']]
 figure4=[['inhalationTrajectoryStartFlow','inhalationTrajectoryEndFlow','inhalationTrajectoryInitialFlow','inhalationTrajectoryPhaseShiftEstimate']]
+figure5=[['pressure_measured','flow_measured','volume_out_measured']]
 #figureX=...
-figureLabels=['Controller','Settings','Pressures','Trajectory']
-figures=[figure1,figure2,figure3,figure4]
+figureLabels=['Controller','Settings','Pressures','Trajectory','Debug']
+figures=[figure1,figure2,figure3,figure4,figure5]
 
 
 #global vars
@@ -48,6 +49,8 @@ yarray2=[]
 yarray3=[]
 lastTime=0
 timeOffset=0
+oldProtocol=0
+lastTimeUserPacket=0
 
 
 #prefill the plot data structure
@@ -95,6 +98,7 @@ def handleRxByte(byte) -> None:
     global statPacketRxCntHeaderFail
     global statPacketRxCntOk
     global statPacketRxCntCrcFail
+    global oldProtocol
 
     if rxState == 0:
         if byte== 0x26: #check for first sync byte
@@ -159,6 +163,7 @@ def handleRxByte(byte) -> None:
         
 def processPacket(byteData, packetType, sequenceNo):
 
+# old protocol (before alarms):
 #typedef struct __attribute__((packed)) {
 #  uint8_t mode_value;                 // byte 3      - rpi unsigned char
 #  uint32_t respiratory_rate_measured; // bytes 4 - 7 - rpi unsigned int
@@ -180,14 +185,53 @@ def processPacket(byteData, packetType, sequenceNo):
 #  uint16_t reserved;                  // bytes 62 - 63 - rpi unsigned int
 #  uint32_t alarm_bits;                // bytes 64 - 67
 #} data_packet_def;
+
+#
+# typedef struct __attribute__((packed)) {
+#   uint8_t mode_value;                        // byte 4
+#   uint8_t control_state;                     // byte 5
+#   uint8_t battery_status;                    // byte 6
+#   uint8_t reserved;                          // byte 7
+#   uint16_t respiratory_rate_set;             // bytes 8 - 9  
+#   uint16_t respiratory_rate_measured;        // bytes 10 - 11
+#   int16_t tidal_volume_set;                  // bytes 12 - 13
+#   int16_t tidal_volume_measured;             // bytes 14 - 15
+#   uint16_t ie_ratio_set;                     // bytes 16 - 17
+#   uint16_t ie_ratio_measured;                // bytes 18 - 19
+#   int16_t peep_value_measured;               // bytes 20- 21
+#   int16_t peak_pressure_measured;            // bytes 22 - 23
+#   int16_t plateau_value_measurement;         // bytes 24 - 25
+#   int16_t pressure_set;                      // bytes 26 - 27
+#   int16_t pressure_measured;                 // bytes 28 - 29
+#   int16_t flow_measured;                     // bytes 30 - 31
+#   int16_t volume_in_measured;                // bytes 32 - 33
+#   int16_t volume_out_measured;               // bytes 34 - 35
+#   int16_t volume_rate_measured;              // bytes 36 - 37
+#   int16_t high_pressure_limit_set;           // bytes 38 - 39
+#   int16_t low_pressure_limit_set;            // bytes 40 - 41
+#   int16_t high_volume_limit_set;             // bytes 42 - 43
+#   int16_t low_volume_limit_set;              // bytes 44 - 45
+#   int16_t high_respiratory_rate_limit_set;   // bytes 46 - 47
+#   int16_t low_respiratory_rate_limit_set;    // bytes 48 - 49
+#   uint32_t alarm_bits;                       // bytes 50 - 53
+# } data_packet_def;
+
     global lastTime
     global plotDataX
     global plotDataY
     global timeOffset
+    global lastTimeUserPacket
     if packetType==0x01:
-        packet = namedtuple('packet','mode_value repiratory_rate_measured respiratory_rate_set tidal_volume_measured tidal_volume_set ie_ratio_measured ie_ratio_set peep_value_measured peak_pressure_measured plateau_value_measurement pressure_measured flow_measured volume_in_measured volume_out_measured volume_rate_measured control_state battery_level reserved alarm_bits')
-        currentPacket = packet(*unpack('<BIIiiIIiiiiiiiiBBHI', byteData))
+        if oldProtocol==1:
+            packet = namedtuple('packet','mode_value repiratory_rate_measured respiratory_rate_set tidal_volume_measured tidal_volume_set ie_ratio_measured ie_ratio_set peep_value_measured peak_pressure_measured plateau_value_measurement pressure_measured flow_measured volume_in_measured volume_out_measured volume_rate_measured control_state battery_level reserved alarm_bits')
+            currentPacket = packet(*unpack('<BIIiiIIiiiiiiiiBBHI', byteData))
+        else:
+            packet = namedtuple('packet','mode_value control_state battery_status reserved respiratory_rate_set respiratory_rate_measured tidal_volume_set tidal_volume_measured ie_ratio_set ie_ratio_measured peep_value_measured peak_pressure_measured plateau_value_measurement pressure_set pressure_measured flow_measured volume_in_measured volume_out_measured volume_rate_measured high_pressure_limit_set low_pressure_limit_set high_volume_limit_set low_volume_limit_set high_respiratory_rate_limit_set low_respiratory_rate_limit_set alarm_bits')
+            currentPacket = packet(*unpack('<BBBBHHhhHHhhhhhhhhhhhhhhhI', byteData))
         
+        if lastTimeUserPacket==lastTime:
+            lastTime+=100
+
         for figure in figures:
             for plot in figure:
                 for element in plot:
@@ -210,6 +254,7 @@ def processPacket(byteData, packetType, sequenceNo):
 
                         plotDataY[figures.index(figure)][figure.index(plot)][plot.index(element)].append(value)
                         plotDataX[figures.index(figure)][figure.index(plot)][plot.index(element)].append(lastTime/1000)
+        lastTimeUserPacket=lastTime
 
 
 #typedef struct __attribute__((packed)){
@@ -257,54 +302,61 @@ def processPacket(byteData, packetType, sequenceNo):
 #main code
 
 if len(sys.argv)>1:
+    
+    if (sys.argv[1]=="-1"):
+        print('Usage: python3 playlog filname\n   Options: -1: older format before May 28th')
+    else:
+    
+        #open log and process all packets
+        print('Reading logfile: '+str(sys.argv[1]))
 
-    #open log and process all packets
-    print('Reading logfile: '+str(sys.argv[1]))
-
-    fileLen=os.path.getsize(sys.argv[1])
-    bytesRead=0
-    with open(str(sys.argv[1]),"rb") as f:
-        byteData = f.read(1024*64)
-        bytesRead+=len(byteData)
-        while len(byteData) != 0:
-            # Do stuff with byte.
-            updt(fileLen,bytesRead+1)
-            for byte in byteData:
-                handleRxByte(byte)
+        fileLen=os.path.getsize(sys.argv[1])
+        if len(sys.argv)>2:
+            if (sys.argv[2]=="-1"):
+                oldProtocol=1
+        bytesRead=0
+        with open(str(sys.argv[1]),"rb") as f:
             byteData = f.read(1024*64)
             bytesRead+=len(byteData)
-            
-    print('\nReading file...Done')
-    print('Decoded: '+str(statPacketRxCntOk)+' packets and couldnt decode: '+str(statPacketRxCntCrcFail+statPacketRxCntHeaderFail))
+            while len(byteData) != 0:
+                # Do stuff with byte.
+                updt(fileLen,bytesRead+1)
+                for byte in byteData:
+                    handleRxByte(byte)
+                byteData = f.read(1024*64)
+                bytesRead+=len(byteData)
+                
+        print('\nReading file...Done')
+        print('Decoded: '+str(statPacketRxCntOk)+' packets and couldnt decode: '+str(statPacketRxCntCrcFail+statPacketRxCntHeaderFail))
 
-    if statPacketRxCntOk==0:
-        print('Aborting due to no decoded packets')
-    else:
-        #create figures and plots
-        visibleFigures=[]
-        visiblePlots=[]
-        for figure in figures:
-            fig=plt.figure()
-            visibleFigures.append(fig)
-            for plot in figure:
-                if figure.index(plot)>0:
-                    subplt=fig.add_subplot(len(figures),1,figure.index(plot)+1,sharex=visiblePlots[len(visiblePlots)-figure.index(plot)])
-                else:
-                    subplt=fig.add_subplot(len(figures),1,figure.index(plot)+1)
-                visiblePlots.append(subplt)
-                label=''
-                for element in plot:
-                    subplt.plot(plotDataX[figures.index(figure)][figure.index(plot)][plot.index(element)],plotDataY[figures.index(figure)][figure.index(plot)][plot.index(element)],label=element)
+        if statPacketRxCntOk==0:
+            print('Aborting due to no decoded packets')
+        else:
+            #create figures and plots
+            visibleFigures=[]
+            visiblePlots=[]
+            for figure in figures:
+                fig=plt.figure()
+                visibleFigures.append(fig)
+                for plot in figure:
                     if figure.index(plot)>0:
-                        subplt.set(xlabel='time (s)', ylabel='data')
+                        subplt=fig.add_subplot(len(figures),1,figure.index(plot)+1,sharex=visiblePlots[len(visiblePlots)-figure.index(plot)])
                     else:
-                        subplt.set(xlabel='time (s)', ylabel='data',title=figureLabels[figures.index(figure)])
-                subplt.legend(loc='upper right', shadow=True)
-                subplt.grid()
-        
-        #show everything
-        plt.show()
+                        subplt=fig.add_subplot(len(figures),1,figure.index(plot)+1)
+                    visiblePlots.append(subplt)
+                    label=''
+                    for element in plot:
+                        subplt.plot(plotDataX[figures.index(figure)][figure.index(plot)][plot.index(element)],plotDataY[figures.index(figure)][figure.index(plot)][plot.index(element)],label=element)
+                        if figure.index(plot)>0:
+                            subplt.set(xlabel='time (s)', ylabel='data')
+                        else:
+                            subplt.set(xlabel='time (s)', ylabel='data',title=figureLabels[figures.index(figure)])
+                    subplt.legend(loc='upper right', shadow=True)
+                    subplt.grid()
+            
+            #show everything
+            plt.show()
 
 else:
     #usage
-    print('Usage: python3 playlog filname')
+    print('Usage: python3 playlog filname\n   Options: -1: older format before May 28th')
